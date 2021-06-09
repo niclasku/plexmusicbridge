@@ -40,7 +40,7 @@ Following environment variables are present by default:
 | ENV                     | Description                                                                 | Required | Default        |
 | ----------------------- | ----------------------------------------------------------------------------|----------|----------------|
 | PLAYER_NAME             | Name of player implementation (e.g. `vlc` or `851n`)                        | Yes      |                |
-| LOG_PATH                | Path to lof files inside the container                                      |          | ./             |
+| LOG_PATH                | Path to log files inside the container                                      |          | ./             |
 | LOG_LEVEL               | Log level (`error`, `warning`, `info` or `debug`)                           |          | error          |
 | GDM_PORT                | Port for Plex GDM requests                                                  |          | 32412          |
 | COMPANION_PORT          | Port of Plex Companion request handler                                      |          | 32005          |
@@ -74,3 +74,4 @@ For Azur 851N:
 - [ ] improve code style (e.g. private methods)
 - [ ] add tests
 - [ ] replace polling in 851N implementation
+- [ ] container should allow port forwarding not just host network

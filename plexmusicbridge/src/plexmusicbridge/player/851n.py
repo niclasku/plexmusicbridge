@@ -290,7 +290,7 @@ class Player:
                 self.log.info('Detected end of song, play next one')
                 self.manager.auto_next()
             if n == 3:
-                if self._get_source() != 'media player' and self.request_next:
+                if self.request_next and self._get_source() != 'media player':
                     self.log.info('Stop playback because player changed source')
                     self.manager.stop()
                 n = 0
