@@ -278,7 +278,7 @@ class Player:
             return 0
 
     def is_waiting(self):
-        if self.action == 'pause' and self.is_paused is False:
+        if (self.action == 'pause' or self.action == 'stop') and self.is_paused is False:
             return True
         else:
             return False
@@ -303,7 +303,7 @@ class Player:
         try:
             urlopen(url)
             return True
-        except URLError:
+        except:
             return False
 
     def wait_for_ready(self):
