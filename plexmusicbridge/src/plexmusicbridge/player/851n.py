@@ -1,7 +1,6 @@
 import xmltodict
 from urllib.request import urlopen
 from urllib.request import Request
-from urllib.error import URLError
 from logging import getLogger
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread, Lock, Event
@@ -59,21 +58,19 @@ class PlayerConfig:
         self.host_ip = None
         self.notify_port = None
         self.rewrite_http = True
-        self.rewrite_host = False
+        self.rewrite_host = True
 
     def parse_env(self):
         self.ip = environ.get('PLAYER_IP')
         self.port = environ.get('PLAYER_PORT') or '8050'
         self.host_ip = environ.get('HOST_IP')
         self.notify_port = environ.get('NOTIFY_PORT') or '30111'
-        self.rewrite_host = self.host_ip
 
     def save_arguments(self, args):
         self.ip = args.player_ip
         self.port = args.player_port or '8050'
-        self.host_ip = args.player_host_ip
-        self.notify_port = args.player_notify_port or '30111'
-        self.rewrite_host = args.player_host_ip
+        self.host_ip = args.host_ip
+        self.notify_port = args.notify_port or '30111'
 
     @staticmethod
     def add_arguments(parser):

@@ -1,5 +1,6 @@
 import requests
 import xmltodict
+import socket
 
 
 class PlexServer:
@@ -17,7 +18,7 @@ class PlexServer:
             protocol = self.protocol
 
         if rewrite_host:
-            address = rewrite_host
+            address = socket.gethostbyname(self.address)
         else:
             address = self.address
 
