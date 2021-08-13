@@ -59,7 +59,7 @@ class SubscriptionManager:
             self.notify_server()
             if self.subscribers:
                 msg = self.msg()
-                for subscriber in self.subscribers.values():
+                for subscriber in list(self.subscribers.values()):
                     subscriber.send_update(msg)
 
     def notify_server(self):
@@ -93,7 +93,7 @@ class SubscriptionManager:
         # only called from notify() which already acquired the lock
         for subscriber in list(self.subscribers.values()):
             if subscriber.uuid == uuid or subscriber.host == uuid:
-                self.log.debug('Remove subscriber: %s', uuid)
+                self.log.debug('Remove subscriber: %s', subscriber.host)
                 del self.subscribers[subscriber.uuid]
 
 
@@ -114,11 +114,12 @@ class Subscriber:
         msg = msg.format(command_id=self.command_id)
         url = '%s://%s:%s/:/timeline' % (self.protocol, self.host, self.port)
         try:
-            response = post(url, msg, headers=companion_header(self.sub_mgr.config))
+            response = post(url, msg, headers=companion_header(self.sub_mgr.config), timeout=2)
             self.log.debug('Send update to subscriber: %s to %s', msg, self.host)
         except Exception as e:
             self.log.error('Could not send update to subscriber: ' + str(e))
             self.sub_mgr.remove_subscriber(self.uuid)
         else:
             if response.status_code in (False, None, 401):
+                self.log.error('Could not send update to subscriber, response code: ' + str(response.status_code))
                 self.sub_mgr.remove_subscriber(self.uuid)
