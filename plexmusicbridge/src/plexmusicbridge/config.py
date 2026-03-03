@@ -6,8 +6,8 @@ class Config:
         self.companion_port = companion_port or 32005
         self.title = title or 'Player'
         self.product = product or 'Music Bridge'
-        self.version = '0.1'
-        self.client_id = '4f72945e-fc15-4637-ac3c-b4a7cd80e47f'
+        self.version = '4.12.4'
+        self.client_id = '60982fb8-6b50-4abf-8efe-3de684627661'
         self.platform = 'Linux'
         self.platform_version = '0.1'
         self.player_name = player_name or 'vlc'

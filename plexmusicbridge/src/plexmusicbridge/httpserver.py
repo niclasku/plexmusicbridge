@@ -83,34 +83,50 @@ class RequestHandler(SimpleHTTPRequestHandler):
             self.send_resp('', device_header(self.server.config))
         else:
             # Handle all playback commands
-            self.server.play_mgr.handle_cmd(self.client_address, request_path, request_params)
-            self.send_resp('', device_header(self.server.config))
+            try:
+                self.server.play_mgr.handle_cmd(self.client_address, request_path, request_params)
+            except Exception as e:
+                self.log.error('Error handling playback command %s: %s', request_path, e)
+                self.send_resp('', device_header(self.server.config), code=500)
+            else:
+                self.send_resp('', device_header(self.server.config))
 
     def handle_polling(self, request_params):
-        from time import sleep
+        from time import sleep, monotonic
         sub_mgr = self.server.sub_mgr
-        if request_params.get('wait') == '1':
-            sleep(0.95)
-        if self.client_address[0] not in self.server.client_dict:
-            self.server.client_dict[self.client_address[0]] = []
-        tracker = self.server.client_dict[self.client_address[0]]
-        tracker.append(self.client_address[1])
-        while not self.server.play_mgr.get_play_state() and sub_mgr.stop_send_to_web and \
-                not (len(tracker) > 3 and tracker[0] == self.client_address[1]):
-            sleep(1)
-        tracker.pop(0)
+        wait_for_update = request_params.get('wait') == '1'
+        client_uuid = self.headers.get('X-Plex-Client-Identifier', self.client_address[0])
+
+        timeline_id = self.server.play_mgr.get_timeline_id()
+        last_timeline_id = self.server.timeline_tracker.get(client_uuid, 0)
+
+        # Plexamp expects long-poll style behavior for wait=1.
+        if wait_for_update and timeline_id <= last_timeline_id:
+            timeout_s = 9.5
+            start = monotonic()
+            while self.server.play_mgr.get_timeline_id() <= last_timeline_id:
+                if monotonic() - start >= timeout_s:
+                    self.send_resp('', web_header(self.server.config))
+                    self.log.debug('No timeline change for wait poll, return empty response')
+                    return
+                sleep(0.25)
+
+        timeline_id = self.server.play_mgr.get_timeline_id()
+        changed = timeline_id > last_timeline_id
         msg = sub_mgr.msg().format(command_id=request_params.get('commandID', 0))
-        if sub_mgr.is_playing:
+
+        if changed or (sub_mgr.is_playing and not wait_for_update):
             self.send_resp(msg, web_header(self.server.config))
+            self.server.timeline_tracker[client_uuid] = timeline_id
             self.log.debug('Send current state to Plex web clients')
         elif not sub_mgr.stop_send_to_web:
             sub_mgr.stop_send_to_web = True
             self.send_resp(msg, web_header(self.server.config))
+            self.server.timeline_tracker[client_uuid] = timeline_id
             self.log.info('Signal stop to Plex web clients once')
         else:
-            # Fail connection with HTTP 500 error - has been open too long
-            self.send_resp('Close connection', web_header(self.server.config), code=500)
-            self.log.info('Close connection to Plex web client')
+            self.send_resp('', web_header(self.server.config))
+            self.log.debug('No timeline change, return empty response')
 
 
 class HTTPServer(ThreadingHTTPServer):
@@ -119,6 +135,7 @@ class HTTPServer(ThreadingHTTPServer):
         self.play_mgr = play_mgr
         self.config = config
         self.client_dict = {}
+        self.timeline_tracker = {}
         self.stopped = Event()
         ThreadingHTTPServer.__init__(self, ('0.0.0.0', config.companion_port), RequestHandler)
         self.server_thread = Thread(target=self.serve_forever, args=(0.5,), daemon=True)

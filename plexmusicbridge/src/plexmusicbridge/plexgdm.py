@@ -18,10 +18,10 @@ class PlexGdm:
                                            config.product, config.version)
 
     def hello(self):
-        return ('HELLO %s\n%s' % (GDM_HEADER, self.client_data)).encode()
+        return ('HELLO {}\r\n{}'.format(GDM_HEADER, self.client_data)).encode()
 
     def bye(self):
-        return ('BYE {}\n{}'.format(GDM_HEADER, self.client_data)).encode()
+        return ('BYE {}\r\n{}'.format(GDM_HEADER, self.client_data)).encode()
 
     def register(self):
         try:
@@ -72,7 +72,7 @@ class PlexGdm:
                     self.log.info('Detected client discovery request from ' + str(addr))
                     self.log.debug('Send registration data HTTP/1.0 200 OK')
                     try:
-                        self.socket.sendto(('HTTP/1.0 200 OK\n' + self.client_data).encode(), addr)
+                        self.socket.sendto(('HTTP/1.0 200 OK\r\n' + self.client_data).encode(), addr)
                     except Exception as e:
                         self.log.error('Unable to send client update message: ' + str(e))
             sleep(self.config.gdm_interval)

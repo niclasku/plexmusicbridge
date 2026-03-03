@@ -1,10 +1,10 @@
 # GDM constants
 GDM_MULTICAST_ADDR = '239.0.0.250'
-GDM_MULTICAST_PORT = 32413
+GDM_MULTICAST_PORT = 32412
 GDM_HEADER = '* HTTP/1.0'
-GDM_DATA = 'Content-Type: plex/media-player\nResource-Identifier: {}\nName: {}\nPort: {}\nProduct: {}\nVersion: {' \
-           '}\nProtocol: plex\nProtocol-Version: 1\nProtocol-Capabilities: timeline,playback,' \
-           'playqueues\nDevice-Class: STB\n '
+GDM_DATA = 'Content-Type: plex/media-player\r\nResource-Identifier: {}\r\nName: {}\r\nPort: {}\r\nProduct: {}\r\n' \
+           'Version: {}\r\nProtocol: plex\r\nProtocol-Version: 1\r\nProtocol-Capabilities: timeline,playback,' \
+           'playqueues\r\nDevice-Class: STB\r\n'
 
 # Listener constants
 XML_HEADER = '<?xml version="1.0" encoding="UTF-8"?>\n'

@@ -27,6 +27,7 @@ class PlaybackManager:
         self.is_playing = False
         self.is_paused = False
         self.last_cmd_id = {}
+        self.timeline_id = 1
 
     def start(self):
         with self.player_lock:
@@ -112,6 +113,14 @@ class PlaybackManager:
             else:
                 return 'stopped'
 
+    def get_timeline_id(self):
+        with self.lock:
+            return self.timeline_id
+
+    def bump_timeline_id(self):
+        with self.lock:
+            self.timeline_id += 1
+
     def handle_cmd(self, address, path, opt):
         # try to update server info
         with self.plex_lock:
@@ -134,10 +143,16 @@ class PlaybackManager:
         elif path == '/player/playback/seekTo':
             with self.player_lock:
                 self.player.seek(int(opt['offset']))
+            self.bump_timeline_id()
         elif path == '/player/playback/pause':
             self.pause()
         elif path == '/player/playback/play':
             self.play()
+        elif path == '/player/playback/playPause':
+            if self.get_state() == 'playing':
+                self.pause()
+            else:
+                self.play()
         elif path == '/player/playback/stop':
             self.stop()
         elif path == '/player/playback/skipNext':
@@ -150,12 +165,15 @@ class PlaybackManager:
             if opt.get('repeat'):
                 with self.queue_lock:
                     self.queue.set_repeat(int(opt['repeat']))
+                self.bump_timeline_id()
             elif opt.get('volume'):
                 with self.player_lock:
                     self.player.set_volume(int(opt['volume']))
+                self.bump_timeline_id()
             elif opt.get('shuffle'):
                 with self.queue_lock:
                     self.queue.set_shuffle(int(opt['shuffle']))
+                self.bump_timeline_id()
             else:
                 self.log.warning('Not implemented: ' + opt)
         else:
@@ -166,6 +184,7 @@ class PlaybackManager:
             pq = self.plex_server.get_queue(container_key)
         with self.queue_lock:
             self.queue.update(pq, True)
+        self.bump_timeline_id()
 
     def play_media(self, media_type, container_key):
         if media_type != 'music':
@@ -198,17 +217,20 @@ class PlaybackManager:
         if self.is_paused and self.is_playing:
             self.is_playing = True
             self.is_paused = False
+            self.timeline_id += 1
             self.lock.release()
             with self.player_lock:
                 self.player.resume()
         elif self.is_playing and not self.is_paused:
             self.is_playing = True
             self.is_paused = False
+            self.timeline_id += 1
             self.lock.release()
             self.load_play()
         elif not self.is_playing:
             self.is_playing = True
             self.is_paused = False
+            self.timeline_id += 1
             self.lock.release()
             self.load_play()
 
@@ -216,9 +238,12 @@ class PlaybackManager:
         self.lock.acquire()
         if not self.is_paused:
             self.is_paused = True
+            self.timeline_id += 1
             self.lock.release()
             with self.player_lock:
                 self.player.pause()
+        else:
+            self.lock.release()
 
     def skip(self, key):
         with self.queue_lock:
@@ -227,8 +252,11 @@ class PlaybackManager:
 
     def stop(self):
         with self.lock:
+            was_active = self.is_playing or self.is_paused
             self.is_playing = False
             self.is_paused = False
+            if was_active:
+                self.timeline_id += 1
         with self.queue_lock:
             self.queue.reset()
         with self.player_lock:
