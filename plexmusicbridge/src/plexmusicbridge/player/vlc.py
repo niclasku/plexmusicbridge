@@ -26,6 +26,7 @@ class Player:
         self.stop_thread = Event()
         self.lock = Lock()
         self.request_next = False
+        self.paused = False
         self.media_player = vlc.MediaPlayer()
         self.manager = manager
         self.monitor_thread = Thread(target=self.monitor, daemon=True)
@@ -42,16 +43,22 @@ class Player:
             while not self.media_player.is_playing():
                 sleep(0.05)
             self.request_next = True
+            self.paused = False
 
     def stop(self):
         self.media_player.stop()
         with self.lock:
             self.request_next = False
+            self.paused = False
 
     def pause(self):
+        with self.lock:
+            self.paused = True
         self.media_player.pause()
 
     def resume(self):
+        with self.lock:
+            self.paused = False
         self.media_player.play()
 
     def seek(self, time):
@@ -80,7 +87,7 @@ class Player:
 
     def is_waiting(self):
         with self.lock:
-            if self.request_next and not self.media_player.is_playing():
+            if self.request_next and not self.paused and not self.media_player.is_playing():
                 self.request_next = False
                 return True
             else:
