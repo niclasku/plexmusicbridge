@@ -58,7 +58,7 @@ class PlayerConfig:
         self.host_ip = None
         self.notify_port = None
         self.rewrite_http = True
-        self.rewrite_host = True
+        self.rewrite_host = False
 
     def parse_env(self):
         self.ip = environ.get('PLAYER_IP')
