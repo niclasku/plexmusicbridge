@@ -1,11 +1,13 @@
 import xmltodict
+import asyncio
 from urllib.request import urlopen
 from urllib.request import Request
 from logging import getLogger
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread, Lock, Event
-from time import sleep
+from time import sleep, monotonic
 from os import environ
+from aiostreammagic import StreamMagicClient
 
 PAYLOAD_FMT = '<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' \
               's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action} xmlns:u="{urn}">' \
@@ -13,10 +15,9 @@ PAYLOAD_FMT = '<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http:/
 AV_URN = 'urn:schemas-upnp-org:service:AVTransport:1'
 CONTROL_URL = '/d985a16c-c3e8-48a0-9fd1-2f36ab24a78a/AVTransport/invoke'
 EVENT_URL = '/d985a16c-c3e8-48a0-9fd1-2f36ab24a78a/AVTransport/event'
-VOL_URN = 'urn:UuVol-com:service:UuVolControl:5'
-VOL_URL = '/e3f7d9db-2db9-49c7-8958-cc8a98154526/RecivaRadio/invoke'
 REND_URN = 'urn:schemas-upnp-org:service:RenderingControl:1'
 REND_URL = '/d985a16c-c3e8-48a0-9fd1-2f36ab24a78a/RenderingControl/invoke'
+DEVICE_MAX_VOLUME = 50
 
 # hack to set the correct thumbnail
 # rest of metadata is not used by device but necessary to send
@@ -57,7 +58,7 @@ class PlayerConfig:
         self.port = None
         self.host_ip = None
         self.notify_port = None
-        self.rewrite_http = True
+        self.rewrite_http = False
         self.rewrite_host = False
 
     def parse_env(self):
@@ -92,18 +93,92 @@ class Player:
         self.action = 'stop'
         self.request_next = False
         self.is_paused = False
+        self.last_elapsed = 0
+        self.last_known_volume = 50
+        self.last_logged_volume = None
+        self.bridge_session_active = False
+        self.bridge_source = None
+
+        self.sm_lock = Lock()
+        self.sm_source = None
+        self.sm_state = None
+        self.sm_volume_percent = None
+        self.sm_last_update = 0.0
+        self.sm_client = None
         self.manager = manager
 
         self.stop_signal = Event()
         self.monitor_thread = Thread(target=self.monitor, daemon=True)
+        self.streammagic_thread = Thread(target=self._streammagic_loop, daemon=True)
         self.notify_server = NotificationServer(self, ('0.0.0.0', int(self.notify_port)), NotificationHandler)
         self.notify_server_thread = Thread(target=self.notify_server.serve_forever, daemon=True)
         self.subscription_thread = Thread(target=self._renew_subscription, daemon=True)
 
     def start(self):
+        self._initialize_volume_cache()
+        self.streammagic_thread.start()
         self.monitor_thread.start()
         self.notify_server_thread.start()
         self.subscription_thread.start()
+
+    def _initialize_volume_cache(self):
+        vol = self._read_volume()
+        if vol is not None:
+            self.last_known_volume = vol
+
+    async def _update_streammagic_snapshot(self):
+        if self.sm_client is None:
+            return
+        play_state = await self.sm_client.get_play_state()
+        state = await self.sm_client.get_state()
+        source = None
+        if play_state and play_state.metadata:
+            source = play_state.metadata.source
+        if not source:
+            source = state.source if state else None
+        new_volume_percent = state.volume_percent if state else None
+        bump_timeline = False
+        with self.sm_lock:
+            prev_volume_percent = self.sm_volume_percent
+            self.sm_source = source
+            self.sm_state = play_state.state if play_state else None
+            self.sm_volume_percent = new_volume_percent
+            self.sm_last_update = monotonic()
+            if new_volume_percent is not None and prev_volume_percent != new_volume_percent:
+                bump_timeline = True
+        if bump_timeline:
+            self.manager.bump_timeline_id()
+
+    async def _on_streammagic_update(self, _client, _callback_type):
+        try:
+            await self._update_streammagic_snapshot()
+        except Exception as e:
+            self.log.debug('StreamMagic callback update failed: %s', e)
+
+    async def _streammagic_runner(self):
+        while not self.stop_signal.is_set():
+            try:
+                self.sm_client = StreamMagicClient(self.ip)
+                await self.sm_client.connect()
+                await self.sm_client.register_state_update_callbacks(self._on_streammagic_update)
+                await self._update_streammagic_snapshot()
+                while not self.stop_signal.is_set():
+                    # Fallback polling in case push updates are delayed.
+                    await self._update_streammagic_snapshot()
+                    await asyncio.sleep(2)
+            except Exception as e:
+                self.log.warning('StreamMagic detector unavailable: %s', e)
+                await asyncio.sleep(2)
+            finally:
+                if self.sm_client is not None:
+                    try:
+                        await self.sm_client.disconnect()
+                    except Exception:
+                        pass
+                self.sm_client = None
+
+    def _streammagic_loop(self):
+        asyncio.run(self._streammagic_runner())
 
     def _renew_subscription(self):
         while 1:
@@ -194,12 +269,26 @@ class Player:
         response = self._soap_request('Play', [{'InstanceID': 0}, {'Speed': speed}])
         return self._check_response(response, 'u:PlayResponse')
 
-    def _get_source(self):
-        response = self._soap_request('GetAudioSource', urn=VOL_URN, data=[{'InstanceID': 0}], url=VOL_URL)
-        try:
-            return response['s:Envelope']['s:Body']['r:GetAudioSourceResponse']['RetAudioSourceValue'].lower()
-        except (TypeError, KeyError):
-            return 'media player'
+    def _is_owned_by_bridge(self):
+        with self.sm_lock:
+            source = self.sm_source
+            last_update = self.sm_last_update
+
+        if monotonic() - last_update > 10:
+            # Avoid false positives when detector is temporarily stale.
+            self.log.debug('StreamMagic snapshot stale, assuming bridge ownership')
+            return True
+
+        if self.bridge_source is None and source:
+            self.bridge_source = source
+
+        if self.bridge_source and source and source != self.bridge_source:
+            self.log.info('Detected external source change (%s -> %s)', self.bridge_source, source)
+            return False
+
+        # Source unchanged means ownership is still ours.
+        # We intentionally do not gate on state here to allow end-of-track handling.
+        return True
 
     def play(self, music, thumb):
         with self.lock:
@@ -210,6 +299,9 @@ class Player:
                 sleep(0.2)
             self.request_next = True
             self.is_paused = False
+            self.bridge_session_active = True
+            with self.sm_lock:
+                self.bridge_source = self.sm_source
 
     def pause(self):
         with self.lock:
@@ -220,6 +312,8 @@ class Player:
     def stop(self):
         with self.lock:
             self.request_next = False
+            self.bridge_session_active = False
+            self.bridge_source = None
             response = self._soap_request('Stop', [{'InstanceID': 0}, {'Speed': 1}])
         return self._check_response(response, 'r:StopResponse')
 
@@ -257,22 +351,46 @@ class Player:
             return False
 
     def set_volume(self, volume):
-        vol = int(round(int(volume), -1) / 10)
+        vol = int(round((int(volume) * DEVICE_MAX_VOLUME) / 100))
         data = [{'InstanceID': 0}, {'Channel': 'Master'}, {'DesiredVolume': vol}]
         response = self._soap_request('SetVolume', urn=REND_URN, data=data, url=REND_URL)
+        if response:
+            self.last_known_volume = int(volume)
         return self._check_response(response, 'SetVolumeResponse')
 
-    def get_volume(self):
+    def _read_volume(self):
         data = [{'InstanceID': 0}, {'Channel': 'Master'}]
         response = self._soap_request('GetVolume', urn=REND_URN, data=data, url=REND_URL)
         try:
             vol = int(response['s:Envelope']['s:Body']['r:GetVolumeResponse']['CurrentVolume'])
-            if vol <= 10:
-                return vol * 10
-            else:
-                return 100
+            vol = max(0, min(vol, DEVICE_MAX_VOLUME))
+            return int(round((vol * 100) / DEVICE_MAX_VOLUME))
         except (TypeError, KeyError):
-            return 0
+            return None
+
+    def get_volume(self):
+        with self.sm_lock:
+            sm_volume_percent = self.sm_volume_percent
+        if sm_volume_percent is not None:
+            sm_volume_percent = max(0, min(int(sm_volume_percent), 100))
+            vol = sm_volume_percent
+            self.last_known_volume = vol
+            if self.last_logged_volume != vol:
+                self.log.info('Volume changed to %s (StreamMagic percent=%s)',
+                              vol, sm_volume_percent)
+                self.last_logged_volume = vol
+                self.manager.bump_timeline_id()
+            return vol
+
+        vol = self._read_volume()
+        if vol is None:
+            return self.last_known_volume
+        self.last_known_volume = vol
+        if self.last_logged_volume != vol:
+            self.log.info('Volume changed to %s (SOAP fallback)', vol)
+            self.last_logged_volume = vol
+            self.manager.bump_timeline_id()
+        return vol
 
     def is_waiting(self):
         if (self.action == 'pause' or self.action == 'stop') and self.is_paused is False:
@@ -281,18 +399,33 @@ class Player:
             return False
 
     def monitor(self):
-        n = 0
         while not self.stop_signal.is_set():
+            if self.request_next and self.action == 'play':
+                elapsed = self.get_elapsed()
+                if elapsed >= 0:
+                    self.last_elapsed = elapsed
+
             if self.is_waiting() and self.request_next:
-                self.log.info('Detected end of song, play next one')
-                self.manager.auto_next()
-            if n == 3:
-                if self.request_next and self._get_source() != 'media player':
-                    self.log.info('Stop playback because player changed source')
-                    self.manager.stop()
-                n = 0
-            else:
-                n += 1
+                if self.bridge_session_active and not self._is_owned_by_bridge():
+                    self.log.info('Stop local playback because StreamMagic detected external takeover')
+                    self.bridge_session_active = False
+                    self.bridge_source = None
+                    self.request_next = False
+                    self.manager.stop_local()
+                else:
+                    with self.manager.queue_lock:
+                        duration = int(self.manager.queue.get_duration())
+
+                    if duration - self.last_elapsed > 5000:
+                        self.log.info('Stop local playback because track stopped before end (%sms/%sms)',
+                                      self.last_elapsed, duration)
+                        self.bridge_session_active = False
+                        self.bridge_source = None
+                        self.request_next = False
+                        self.manager.stop_local()
+                    else:
+                        self.log.info('Detected end of song, play next one')
+                        self.manager.auto_next()
             sleep(0.5)
 
     def is_ready(self):
@@ -312,6 +445,7 @@ class Player:
         self.stop()
         self.notify_server.shutdown()
         self.notify_server.server_close()
+        self.streammagic_thread.join()
         self.notify_server_thread.join()
         self.subscription_thread.join()
         self.monitor_thread.join()

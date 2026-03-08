@@ -262,6 +262,16 @@ class PlaybackManager:
         with self.player_lock:
             self.player.stop()
 
+    def stop_local(self):
+        with self.lock:
+            was_active = self.is_playing or self.is_paused
+            self.is_playing = False
+            self.is_paused = False
+            if was_active:
+                self.timeline_id += 1
+        with self.queue_lock:
+            self.queue.reset()
+
     def auto_next(self):
         with self.queue_lock:
             ret = self.queue.next_pos(True)

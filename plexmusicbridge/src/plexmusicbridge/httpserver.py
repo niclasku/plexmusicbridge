@@ -3,6 +3,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 from .const import XML_OK, device_header, resource_xml, web_header
 from threading import Thread, Event
+import re
 
 
 class RequestHandler(SimpleHTTPRequestHandler):
@@ -95,10 +96,16 @@ class RequestHandler(SimpleHTTPRequestHandler):
         from time import sleep, monotonic
         sub_mgr = self.server.sub_mgr
         wait_for_update = request_params.get('wait') == '1'
-        client_uuid = self.headers.get('X-Plex-Client-Identifier', self.client_address[0])
+        # Use request origin as stable key for poll/command ordering; some clients vary identifier headers.
+        client_key = self.client_address[0]
+        request_command_id = int(request_params.get('commandID', 0))
+        self.server.latest_command_id[client_key] = max(
+            request_command_id,
+            self.server.latest_command_id.get(client_key, 0)
+        )
 
         timeline_id = self.server.play_mgr.get_timeline_id()
-        last_timeline_id = self.server.timeline_tracker.get(client_uuid, 0)
+        last_timeline_id = self.server.timeline_tracker.get(client_key, 0)
 
         # Plexamp expects long-poll style behavior for wait=1.
         if wait_for_update and timeline_id <= last_timeline_id:
@@ -111,18 +118,25 @@ class RequestHandler(SimpleHTTPRequestHandler):
                     return
                 sleep(0.25)
 
+        response_command_id = self.server.latest_command_id.get(client_key, request_command_id)
+        msg = sub_mgr.msg().format(command_id=response_command_id)
+        # Build message first; state getters may bump timeline id (e.g. external volume changes).
         timeline_id = self.server.play_mgr.get_timeline_id()
         changed = timeline_id > last_timeline_id
-        msg = sub_mgr.msg().format(command_id=request_params.get('commandID', 0))
 
         if changed or (sub_mgr.is_playing and not wait_for_update):
             self.send_resp(msg, web_header(self.server.config))
-            self.server.timeline_tracker[client_uuid] = timeline_id
+            self.server.timeline_tracker[client_key] = timeline_id
+            if self.log.isEnabledFor(10):
+                volume = re.search(r'volume="([^"]+)"', msg)
+                self.log.debug('Timeline response cmd=%s changed=%s wait=%s volume=%s',
+                               response_command_id, changed, wait_for_update,
+                               volume.group(1) if volume else 'n/a')
             self.log.debug('Send current state to Plex web clients')
         elif not sub_mgr.stop_send_to_web:
             sub_mgr.stop_send_to_web = True
             self.send_resp(msg, web_header(self.server.config))
-            self.server.timeline_tracker[client_uuid] = timeline_id
+            self.server.timeline_tracker[client_key] = timeline_id
             self.log.info('Signal stop to Plex web clients once')
         else:
             self.send_resp('', web_header(self.server.config))
@@ -136,6 +150,7 @@ class HTTPServer(ThreadingHTTPServer):
         self.config = config
         self.client_dict = {}
         self.timeline_tracker = {}
+        self.latest_command_id = {}
         self.stopped = Event()
         ThreadingHTTPServer.__init__(self, ('0.0.0.0', config.companion_port), RequestHandler)
         self.server_thread = Thread(target=self.serve_forever, args=(0.5,), daemon=True)

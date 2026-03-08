@@ -16,6 +16,7 @@ def init_logging(log_path, level):
     logging.basicConfig(level=level, format=log_format)
     logging.getLogger('requests').setLevel(logging.ERROR)
     logging.getLogger('urllib3').setLevel(logging.ERROR)
+    logging.getLogger('aiostreammagic').setLevel(logging.WARNING)
     logger = logging.getLogger()
     rollover = path.isfile(log_file)
     handler = TimedRotatingFileHandler(filename=log_file, backupCount=5, when='d', interval=1)
