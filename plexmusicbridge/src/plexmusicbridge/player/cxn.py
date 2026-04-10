@@ -94,6 +94,7 @@ class Player:
         self.request_next = False
         self.is_paused = False
         self.last_elapsed = 0
+        self.max_elapsed = 0
         self.last_known_volume = 50
         self.last_logged_volume = None
         self.bridge_session_active = False
@@ -293,6 +294,8 @@ class Player:
     def play(self, music, thumb):
         with self.lock:
             self.log.debug('Play: ' + music + ' with thumbnail ' + thumb)
+            self.last_elapsed = 0
+            self.max_elapsed = 0
             self._set_current_media(music, thumb_url=thumb)
             self._play()
             while self.action != 'play':
@@ -404,6 +407,7 @@ class Player:
                 elapsed = self.get_elapsed()
                 if elapsed >= 0:
                     self.last_elapsed = elapsed
+                    self.max_elapsed = max(self.max_elapsed, elapsed)
 
             if self.is_waiting() and self.request_next:
                 if self.bridge_session_active and not self._is_owned_by_bridge():
@@ -416,9 +420,10 @@ class Player:
                     with self.manager.queue_lock:
                         duration = int(self.manager.queue.get_duration())
 
-                    if duration - self.last_elapsed > 5000:
+                    played_ms = max(self.last_elapsed, self.max_elapsed)
+                    if duration - played_ms > 5000:
                         self.log.info('Stop local playback because track stopped before end (%sms/%sms)',
-                                      self.last_elapsed, duration)
+                                      played_ms, duration)
                         self.bridge_session_active = False
                         self.bridge_source = None
                         self.request_next = False
